@@ -12,7 +12,9 @@
 *   'Last out!\0' is encountered. The final two bytes of the
 *   tag are a 16-bit checksum for all loaded sectors.
 *
-*   All other tag data is ignored.
+*   Tags for preceding sectors are presented to the user in
+*   the "hourglass" dialog box displayed by the boot ROM
+*   during booting. (This behaviour can be disabled.)
 *
 *   Loaded data will occupy a contiguous block of RAM from
 *   address $800 onward. This leaves the boot ROM-reserved
