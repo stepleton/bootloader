@@ -213,8 +213,7 @@ out-of-the-box with EASy68K and can be converted to binary files with
     srec_cat program.S68 -offset -0x800 -o program.bin -binary
 
 Generated programs contain small segments of code at 512-byte intervals, each
-one printing a message to the string indicating which disk sector it was loaded
-from.
+one printing a message indicating which disk sector it was loaded from.
 
 ### `FakeBootRom.X68` ###
 
