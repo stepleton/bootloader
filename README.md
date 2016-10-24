@@ -80,7 +80,7 @@ data with a JMP to $000800.
   appear to the right of the dialog box's hourglass icon and overwrite each
   other as each new sector is loaded. Disks that use the bootloader can use
   this facility to display loading progress messages to the user---bearing in
-  mind that only the boot ROM can only show the ASCII characters A-Z, 0-9, and
+  mind that the boot ROM can only show the ASCII characters A-Z, 0-9, and
   -./? (along with a blank, which corresponds to ASCII $20, or "space"). All
   other characters render as a white question mark on a black box.
 
