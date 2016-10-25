@@ -59,7 +59,7 @@ data with a JMP to $000800.
   contiguous memory region starting at $000800.
 
 - The bootloader will continue loading sector data into memory until it loads a
-  a sector whose tag starting with the ASCII string "`Last out!\0`". ('`\0`'
+  a sector whose tag starts with the ASCII string "`Last out!\0`". ('`\0`'
   means the byte $00.)
 
 - The last two bytes of the "`Last out!\0`" sector tag are a 16-bit checksum of
@@ -73,7 +73,7 @@ data with a JMP to $000800.
 
   The bootloader will cause the ROM to display an error message if the computed
   checksum does not match the last two bytes of the sector tag. A decimal
-  representation of the computed checksum is shown.
+  representation of the computed checksum is also shown.
 
 - All other tags are displayed to user on the screen, appearing in the "dialog
   box" displayed by the boot ROM as it begins booting from a disk. The tags
@@ -85,11 +85,11 @@ data with a JMP to $000800.
   other characters render as a white question mark on a black box.
 
   If no progress message is desired for a particular sector, a tag starting
-  with '\0' will cause no new text to be displayed. Any text from a previous
+  with '`\0`' will cause no new text to be displayed. Any text from a previous
   sector tag is preserved. (More generally, tags behave like null-terminated
-  strings: the display of new characters stops as soon as '\0' is encountered.)
-  To clear an old tag without showing new text, a tag containing all spaces
-  (i.e. twelve $20 bytes) is recommended.
+  strings: the display of new characters stops as soon as '`\0`' is
+  encountered.) To clear an old tag without showing new text, a tag containing
+  all spaces (i.e. twelve $20 bytes) is recommended.
 
   A tag starting with "`Last out!\0`" is never shown to the user.
 
@@ -200,7 +200,12 @@ The following programs and libraries are distributed with the bootloader:
 
 This Python program assembles bootable Disk Copy 4.2 disk images for 400K,
 800K, and Twiggy disks given a binary bootloader file, a binary program data
-file, and (optionally) a text file containing strings to use as tags.
+file, and (optionally) a text file containing strings to use as disk sector
+tags. Each line in the tag strings file corresponds to a new tag, and only the
+first twelve characters of each line are used. If a line has fewer than twelve
+characters, the tag is padded to the right with $00 bytes. It is not necessary
+for the tag file to contain the special "`Last out!\0`" tag marking the final
+sector.
 
 ### `booted_test_gen.py` ###
 
@@ -213,16 +218,18 @@ out-of-the-box with EASy68K and can be converted to binary files with
     srec_cat program.S68 -offset -0x800 -o program.bin -binary
 
 Generated programs contain small segments of code at 512-byte intervals, each
-one printing a message indicating which disk sector it was loaded from.
+one printing a message indicating which disk sector it was loaded from. The
+programs loop through these segments indefinitely and can only be interrupted
+by pressing the Lisa's reset button.
 
 ### `FakeBootRom.X68` ###
 
 This library is an incomplete collection of subroutines that mimic the
-externally-callable Lisa boot ROM subroutines used by the bootloader.  These
+externally-callable Lisa boot ROM subroutines used by the bootloader. These
 subroutines are meant to be used in tandem with the `kEASy68K` flag in
 `Bootloader.X68`. When this flag is nonzero, minimal conditional changes are
 enabled that allow the bootloader to run in the EASy68K simulator (for example,
-stage one's code relocation is skipped in lieu of placing stage two at $010000
+stage one's code relocation is skipped in lieu of placing stage two at $100000
 to begin with), and the `FakeBootRom.X68` subroutines are used instead of the
 corresponding Lisa boot ROM code.
 
