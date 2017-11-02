@@ -271,4 +271,6 @@ Revision history
 
 20 October 2016: Initial release. Twiggy support is still absent.
 (Tom Stepleton, stepleton@gmail.com, London)
+
 2 November 2017: Twiggy support added.
+(Tom Stepleton)
