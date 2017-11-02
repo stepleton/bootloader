@@ -20,11 +20,112 @@
 *   address $800 onward. This leaves the boot ROM-reserved
 *   memory areas untouched (including the stack).
 *
+*   If the amount of data to load from the disk exceeds the
+*   amount of free memory available in your Lisa (lower
+*   bounded by <RAM size in bytes> - $800 - $8000 - $200),
+*   the behaviour of the bootloader is unspecified.
+*
 *   After loading, the bootloader verifies the checksum and
 *   JMPs to $800.
 *-----------------------------------------------------------
 
 * Equates
+
+    ; Basic bootloader configuration constants.
+
+    ; Set the following EQU nonzero to have the bootloader show the sector tags
+    ; of all but the last window whilst loading.
+kShowTag   EQU  1
+
+    ; Set the following EQU nonzero to enable additional test and debugging
+    ; code for use with the EASy68K 68000 simulator. Code compiled with this
+    ; flag enabled is not usable as a bootloader.
+kEASy68K   EQU  0
+
+    ; Exactly one of the three parameters below should be nonzero.
+
+    ; Set the following EQU nonzero to build a "new style" bootloader for SONY
+    ; 3.5" drive diskettes, both single-sided (400k) and double-sided (800k).
+kSony      EQU  1
+    ; Set the following EQU nonzero to build a "new style" bootloader for Twiggy
+    ; diskettes.
+kTwiggy    EQU  0
+    ; Set the following EQU nonzero to build an "old style" bootloader, which
+    ; supports SONY 3.5" drive diskettes only (both single- and double-sided).
+    ; It's a few bytes smaller than the "new style" bootloader.
+kOldStyle  EQU  0
+
+    ; If kSony is 1, exactly one of the two parameters below should be nonzero.
+
+    ; How many sides on your SONY disk? In virtually all cases, it's fine and
+    ; even desirable to just select kSony800k, even if you only have 400k media.
+  IFNE kSony
+kSony400k  EQU  0
+kSony800k  EQU  1
+  ENDC
+
+    ; Drive geometry configuration constants for the "new style" bootloader.
+    ; The values below combine with the sTrackSizeBounds array to describe the
+    ; upper bounds of drives, sides, tracks, and sectors on this Lisa.
+
+  IFNE kSony
+    ; The highest track number on any side of any SONY disk is $4F, and the
+    ; highest sector number on that track is $07.
+kTopTtSs   EQU  $4F07
+    ; If any bits in the DdZzTtSs sector identifier (see below) overlap withs
+    ; this mask, the identifier specifies a bad drive or a bad side.
+  IFNE kSony400k
+kDdZzMask  EQU  $7FFF0000
+  ENDC
+  IFNE kSony800k
+kDdZzMask  EQU  $7FFE0000
+  ENDC
+    ; Bitwise-XOR the current DdZzTtSs sector identifier (see below) by
+    ; kNextDrEor, then Bitwise-OR the result by kNextDrOr, to obtain
+    ; 1-<the sector identifier for the first sector of the other drive>.
+    ; (For SONY systems there is no other drive, so this just loops back to the
+    ; beginning of the floppy drive. Not too sensible, but maybe you are using
+    ; a floppy emulator that dynamically changes the sector tags and sector data
+    ; as a way of loading more than 800k at a time? It's... doable, I suppose.)
+kNextDrEor EQU  $00000000
+kNextDrOr  EQU  $7FFFFFFF
+    ; Track 0 has this many sectors. It's assumed that for the largest n such
+    ; that (the current track Tt) <= sTrackSizeBounds[n], the number of sectors
+    ; on track Tt is (kTrk0Sects - n). Put differently, the tracks on the disks
+    ; are grouped into contiguous sets, and the number of tracks per set start
+    ; at kTrk0Sects for the first set and go down by 1 as you move from one set
+    ; to the next adjacent one.
+kTrk0Sects EQU  $0B
+  ENDC
+
+  IFNE kTwiggy
+    ; As configured here (and at sTrackSizeBounds), the "new style" bootloader
+    ; allows loading across Twiggy drives. If the 'Last out!\0' tag is not
+    ; found by the time the bootloader reads the last sector on the boot drive,
+    ; the bootloader will begin reading sectors from the other drive. Of course,
+    ; a standard Lisa with 1 MB of RAM will not be able to store much more in
+    ; memory than a single Twiggy anyway.
+    ;
+    ; The bootloader may boot from either Twiggy drive.
+
+    ; The highest track number on any side of any SONY disk is $2D, and the
+    ; highest sector number on that track is $0E.
+kTopTtSs   EQU  $2D0E
+    ; If any bits in the DdZzTtSs sector identifier (see below) overlap withs
+    ; this mask, the identifier specifies a bad drive or a bad side.
+kDdZzMask  EQU  $7FFE0000
+    ; Bitwise-XOR the current DdZzTtSs sector identifier (see below) by
+    ; kNextDrEor, then Bitwise-OR the result by kNextDrOr, to obtain
+    ; 1-<the sector identifier for the first sector of the other drive>.
+kNextDrEor EQU  $80000000
+kNextDrOr  EQU  $7FFFFFFF
+    ; Track 0 has this many sectors. (See discussion above).
+kTrk0Sects EQU  $15
+  ENDC
+
+    ; As long as you're using a Lisa system that was made available for
+    ; commercial sale, none of the remaining numerical constants should need
+    ; to change.
 
     ; Data addresses
 kBootDvce  EQU  $01B3               ; ROM-computed boot device byte
@@ -41,18 +142,9 @@ kConvRtd5  EQU  $00FE0088           ; Display a string on the screen
 kInitMon   EQU  $00FE0084           ; Boot ROM monitor
 kTwgRead   EQU  $00FE0094           ; Read floppy disk sector
 
-    ; Constants
+    ; ROM routine argument constants
 kFdirTime  EQU  $C0000              ; Disk fdir timeout (two minutes)
 kSectrSize EQU  $200                ; Sectors are 512 bytes
-
-    ; Set the following EQU nonzero to have the bootloader show the sector tags
-    ; of all but the last window whilst loading.
-kShowTag   EQU  1
-
-    ; Set the following EQU nonzero to enable additional test and debugging
-    ; code for use with the EASy68K 68000 simulator. Code compiled with this
-    ; flag enabled is not usable as a bootloader.
-kEASy68K   EQU  0
 
 
 * Bootloader code
@@ -206,13 +298,91 @@ _7_ SUBA.L  A2,A2                   ; No icon to show the user
     JMP     kInitMon                ; Bail to the monitor
 
 
+  IFEQ kOldStyle
+VALIDATE:
+    ; ** "New-style" configurable bootloader for all ordinary Lisa systems. **
+    ;
+    ; Check whether a DdZzTtSs (Dd=drive, Zz=side, Tt=track, Ss=sector) sector
+    ; identifier lists a valid drive, side, track, and sector. If not,
+    ; optionally and only if practicable, advance the sector identifier upward
+    ; through some of its numerically contiguous neighboring 32-bit numbers that
+    ; are also invalid---but stop before arriving at a valid sector identifier.
+    ;
+    ; Diagrammatically, the set of valid side, track, and sector identifiers
+    ; is discontiguous over the 24-bit integers (* means "valid identifier"):
+    ;
+    ;   _____*****_____*****_______________*****_____*****_______________
+    ;                   H    I            J                      increasing-->
+    ;
+    ; If VALIDATE is called with the sector identifier H, it must indicate that
+    ; the identifier is valid; if it's called with the sector identifier I, it
+    ; must indicate the identifier is invalid, and it can additionally mutate
+    ; the sector identifier up to (but no further than) J.
+    ;
+    ; After executing VALIDATE, then:
+    ;  - to branch on a *valid* identifier, BLS
+    ;  - to branch on an *invalid* identifier, BHI
+    ;
+    ; Arguments to this routine:
+    ;   D7: sector to load: DdZzTtSs (Dd=drive, Zz=side, Tt=track, Ss=sector)
+    ; Trashes registers: A0 D0 D1
+
+    ; The sector identifier can't have any bits that overlap kDdZzMask; if it
+    ; did, it would be referring to Side 3 or greater of the current disk. We
+    ; advance such addresses to the next drive (or loop around to the beginning
+    ; of the current drive if there is no next drive).
+    MOVE.L  D7,D0                   ; We'll dissect the identifier in D0
+    ANDI.L  #kDdZzMask,D0           ; Does identifier refer to a bad disk/side?
+    BEQ.S   _8a                     ; No, carry on
+  IFNE kNextDrEor
+    EORI.L  #kNextDrEor,D7          ; Yes, advance to just before...
+  ENDC
+    ORI.L   #kNextDrOr,D7           ; ...the next drive
+    BRA.S   _9_                     ; Jump to report failure
+
+    ; TtSs can't be larger than kTopTtss; otherwise, advance toward disk side 2.
+_8a CMPI.W  #kTopTtSs,D7            ; Identifier points past end of last track?
+    BLS.S   _8b                     ; No, carry on
+    MOVE.W  #$FFFF,D7               ; Yes, advance to just before the next side
+    BRA.S   _9_                     ; Jump to report failure
+
+    ; Ss can only be certain values depending on the Tt value. Valid values
+    ; are detailed at sTrackSizeBounds below. To obtain the maximum Ss for the
+    ; current Tt, we compare the current track with each entry in that array,
+    ; decrementing the number of sectors per track at each step forward until
+    ; the bound exceeds the current track.
+_8b LEA     sTrackSizeBounds(PC),A0   ; A0 walks along sTrackSizeBounds
+    MOVE.W  D7,D0                   ; Copy current track to D0...
+    LSR.W   #8,D0                   ; ...and move it to LSByte
+    MOVE.B  #kTrk0Sects,D1          ; Sectors per track in the first track group
+_8c CMP.B   (A0)+,D0                ; Current track <= current track group bound?
+    BLS.S   _8d                     ; Yes, jump ahead to check sector validity
+    SUBQ.B  #1,D1                   ; No, lower sector count for next track group
+    BRA.S   _8c                     ; Check bound for next track group
+
+    ; Now that we have the maximum number of sectors for the current track, we
+    ; do our last validity check and advance to just before the next track if
+    ; the check fails.
+_8d CMP.B   D1,D7                   ; Is sector within bounds for this track?
+    BLS.S   _9a                     ; Yes, return indirectly to the caller
+    MOVE.B  #$FF,D7                 ; No, advance D7 to just before next track
+
+_9_ ANDI.B  #$1A,CCR                ; Clear C and Z so caller's BHI will jump
+_9a RTS                             ; Back to caller
+  ENDC  ; IFEQ kOldStyle
+
+
+  IFNE kOldStyle
+  IFNE kTwiggy
+    FAIL    The "old style" bootloader only supports SONY 3.5" drives.
+  ENDC
 VALIDATE:
     ; ** For SONY 3.5" drives, single-sided (400k) and double-sided (800k). **
     ;
     ; Check whether a DdZzTtSs (Dd=drive, Zz=side, Tt=track, Ss=sector) sector
     ; identifier lists a valid side, track, and sector. If not, optionally and
     ; only if practicable, advance the sector identifier upward through some
-    ; of its numerically contiguous neighboring 32-bit numbers that are also 
+    ; of its numerically contiguous neighboring 32-bit numbers that are also
     ; invalid---but stop before arriving at a valid sector identifier.
     ;
     ; Diagrammatically, the set of valid side, track, and sector identifiers
@@ -243,7 +413,7 @@ VALIDATE:
     BHI.S   _9a                     ; Yes, return indirectly to the caller
 
     ; TtSs can't be larger than $4F08; otherwise, advance toward disk side 2.
-    ; ($4F is the largest track on Sony).
+    ; ($4F is the largest track on Sony.)
     CMPI.W  #$4F08,D0               ; TtSs > $4F08?
     BLS.S   _8_                     ; No, skip ahead to keep testing
     MOVE.W  #$FFFF,D7               ; Yes, advance D7 to just before disk side 2
@@ -266,24 +436,43 @@ _8_ MOVE.B  D0,D1                   ; Copy Ss to D1
 
 _9_ ANDI.B  #$1A,CCR                ; Clear C and Z so caller's BHI will jump
 _9a RTS                             ; Back to caller
+  ENDC  ; IFNE kOldStyle
 
-    ; TODO: implement for twiggies.
-    ; TWIGGY:
-    ; tracks 0..3: sectors 0..15.
-    ;        4..A: sectors 0..14.
-    ;       B..10: sectors 0..13.
-    ;      11..16: sectors 0..12.
-    ;      17..1C: sectors 0..11.
-    ;      1D..22: sectors 0..10.
-    ;      23..29: sectors 0..F.
-    ;      2A..2D: sectors 0..E.
-    ;
- 
 
 * String constants
 
     ; **NOTE**: These constants must collectively use an EVEN number of chars,
     ; or else the instructions in Stage 2 will not be word-aligned.
+
+  IFEQ kOldStyle
+
+    ; The sTrackSizeBounds array indicates how tracks on Lisa diskettes have
+    ; diminishing numbers of sectors as you seek from the edge of the disk to
+    ; the spindle. See further discussion at the definition of kTrk0Sects for
+    ; SONY disks, and in the VALIDATE routine, too.
+
+  IFNE kSony
+sTrackSizeBounds:
+    DC.B    $0F                     ; Tracks $00..$0F have $0B sectors
+    DC.B    $1F                     ; Tracks $10..$1F have $0A sectors
+    DC.B    $2F                     ; Tracks $20..$2F have $09 sectors
+    DC.B    $3F                     ; Tracks $30..$3F have $08 sectors
+    DC.B    $FF                     ; The rest ($40..$4F) have $07 sectors
+  ENDC
+
+  IFNE kTwiggy
+sTrackSizeBounds:
+    DC.B    $03                     ; Tracks $00..$03 have $15 sectors
+    DC.B    $0A                     ; Tracks $04..$0A have $14 sectors
+    DC.B    $10                     ; Tracks $0B..$10 have $13 sectors
+    DC.B    $16                     ; Tracks $11..$16 have $12 sectors
+    DC.B    $1C                     ; Tracks $17..$1C have $11 sectors
+    DC.B    $22                     ; Tracks $1D..$22 have $10 sectors
+    DC.B    $29                     ; Tracks $23..$29 have $0F sectors
+    DC.B    $FF                     ; The rest ($2A..$2D) have $0E sectors
+  ENDC
+
+  ENDC  ; IFEQ kOldStyle
 
 sChecksum:
     DC.B    'BAD CHECKSUM',0        ; Checksum mismatch error message
@@ -292,7 +481,7 @@ sFailure:
 sLastOut:
     DC.B    'Last out!',0           ; Tag prefix marking last sector to load
 sPadding:
-    DC.B    $FF                     ; Padding byte (see NOTE above!)
+    DS.W    0                       ; Padding where necessary (see NOTE above!)
   IFNE kEASy68K
 sSuccess:
     DC.B    'Success! We actually jump to $800 here. Ending simulation, bye!',0
@@ -313,6 +502,7 @@ THEEND:
 
     ; Designates START as the beginning of the program.
     END    START
+
 
 *~Font name~Courier New~
 *~Font size~10~

@@ -145,7 +145,7 @@ track, and sector values in the 32-bit sector identifier are within reasonable
 ranges. For this reason, `VALIDATE` is media-specific: a `VALIDATE` designed
 for Twiggy systems will not work on 3.5" systems and vice-versa, unless a more
 intelligent (and space-consuming) "super-`VALIDATE`" compatible with both media
-is made. (So far, only a 3.5"-compatible `VALIDATE` exists.)
+is made. (So far, only media-specific `VALIDATE` subroutines exist.)
 
 The bootloader would function correctly if `VALIDATE` limited itself to
 accepting or rejecting 32-bit sector identifiers; however, to save time that
@@ -176,9 +176,8 @@ macros.
 EASy68K compiles the bootloader source code (`Bootloader.X68`) to a Motorola
 S-record file (`Bootloader.S68` by default) with no changes required. A few
 configuration options are present and documented in the source code.
-Eventually, an option to configure whether the bootloader is built for Twiggy
-or 3.5" systems may be available; for now, the bootloader only works for 3.5"
-disks.
+Options in the source code control whether the bootloader is built for 3.5"
+or Twiggy systems.
 
 Once created, the S-record file may be converted into raw binary code with the
 `EASyBIN.exe` program distributed with EASy68K, or with the `srec_cat` program
@@ -235,6 +234,12 @@ corresponding Lisa boot ROM code.
 
 The `FakeBootRom.X68` subroutines print information to the EASy68K I/O window
 and construct artificial sector and tag data for reads from the floppy disk.
+After a preset number of sectors are read, the next sector will have a
+"`Last out!\0`" sector tag, causing the bootloader to attempt to verify the
+integrity of the loaded data and boot. Currently, this sector tag has a
+hard-coded checksum that matches the artificial data loaded from a 3.5"
+diskette (as simulated by the mock sector reading routine) but not from a Twiggy
+drive.
 
 A bootloader compiled with the `kEASy68K` flag set to a nonzero value is not
 usable as an actual bootloader for Lisa floppy disks.
@@ -266,3 +271,4 @@ Revision history
 
 20 October 2016: Initial release. Twiggy support is still absent.
 (Tom Stepleton, stepleton@gmail.com, London)
+2 November 2017: Twiggy support added.

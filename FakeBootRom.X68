@@ -133,6 +133,8 @@ _f0 mPrntLn #sImNoErr               ; Print "no error message" string
     TRAP    #15                     ; Call the EASy68K I/O trap (halts!)
 
     ; Our stand-in for the TWGREAD routine
+    ; Note that the checksum for the final sector assumes that the bootloader
+    ; has been trying to read a SONY 3.5" disk.
 FAKE_TWGREAD:
     mPrntLn #sTwgRead               ; Print TWGREAD banner
     BSR     SHOW_D0
@@ -184,7 +186,7 @@ FAKE_VFYCHKSM:
     BSR     SHOW_D0
     BSR     SHOW_D1
     BSR     SHOW_A0
-    MOVEM   D4,-(A7)                ; Save D4 on stack
+    MOVE.L  D4,-(A7)                ; Save D4 on stack
     CLR.L   D2                      ; Holds last word added to checksum
     CLR.L   D3                      ; Accumulates checksum
     CLR.L   D4                      ; Checksum up to all but the last word
@@ -201,7 +203,7 @@ _fA MOVE.W  D3,D4                   ;   Save old checksum
     TST.W   D3                      ; See if D3 is 0
     BEQ.S   _fB                     ; It is; checksum was a match
     ORI.B   #$1,CCR                 ; It isn't; mark the error
-_fB MOVEM   (A7)+,D4                ; Restore D4; MOVEM won't alter CCR
+_fB MOVEM.L (A7)+,D4                ; Restore D4; MOVEM won't alter CCR
     RTS                             ; Back to caller
 
     ; Register-printing subroutines

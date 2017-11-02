@@ -17,7 +17,7 @@ def _define_flags():
       description='Build a bootable Apple Lisa .dc42 disk image')
 
   flags.add_argument('program',
-                     help='68000 program to load+run (starting address $480)',
+                     help='68000 program to load+run (starting address $800)',
                      type=argparse.FileType('rb'))
 
   flags.add_argument('-o', '--output',
@@ -64,6 +64,24 @@ _FORMAT_BYTE = {'sony_400k': '\x02',  # Single-sided; "Mac 400k" interleaving.
 
 _DC42_MAGIC = '\x01\x00'  # BLU "magic number" string.
 
+# For the loose compatibility checks in _check_bootloader_compatibility: A
+# "Stepleton" bootloader is determined to be built for a certain floppy media
+# if it contains all of the binary strings paired with a corresponding
+# _BOOTLOADER_SIGNATURES key. Meanwhile, _BOOTLOADER_COMPATIBILITIES[k] is the
+# set of bootloader build types that are notionally suitable for use with
+# floppy media type k.
+
+_BOOTLOADER_SIGNATURES = {
+    'sony_400k': ('\x4f\x07', '\x7f\xff\x00\x00', '\x0f\x1f\x2f\x3f\xff'),
+    'sony_800k': ('\x4f\x07', '\x7f\xfe\x00\x00', '\x0f\x1f\x2f\x3f\xff'),
+    'twiggy': (
+        '\x2d\x0e', '\x7f\xfe\x00\x00', '\x03\x0a\x10\x16\x1c\x22\x29\xff'),
+}
+
+_BOOTLOADER_COMPATIBILITIES = {'sony_400k': {'sony_400k', 'sony_800k'},
+                               'sony_800k': {'sony_800k'},
+                               'twiggy': {'twiggy'}}
+
 
 def main(FLAGS):
   # No tags_file listed? We supply a boring stand-in.
@@ -71,6 +89,9 @@ def main(FLAGS):
 
   # Load bootloader. If less than 512 bytes, pad out with zeros.
   bootloader_data, _ = _read_binary_data(FLAGS.bootloader, 0x200, 'bootloader')
+
+  # Warn user if bootloader and floppy type may not be compatible.
+  _check_bootloader_compatibility(bootloader_data, FLAGS.floppy)
 
   # Load program data; if smaller than the disk data capacity minus 512 (for the
   # sector already used by the bootloader), pad it out with zeros.
@@ -370,14 +391,46 @@ def _permute_data_and_tags_for_sony_800k(data, tags):
   return data, tags
 
 
+def _check_bootloader_compatibility(bootloader_data, floppy):
+  """Perform loose checks on bootloader and floppy media compatibility.
+
+  Attempts to determine the type of media `bootloader_data` was compiled for,
+  and issues warnings if `floppy` appears not to be compatible with that
+  kind of media. See also notes above the definitions of
+  _BOOTLOADER_SIGNATURES and _BOOTLOADER_COMPATIBILITIES.
+
+  Args:
+    bootloader_data: binary bootloader data.
+    floppy: string identifier for target floppy media.
+  """
+  # First, try to detect the kind of floppy media the bootloader was built for.
+  # Warn and give up if we can't identify one unique kind of media.
+  all_bootloader_media = []
+  for bootloader_media, signatures in _BOOTLOADER_SIGNATURES.items():
+    if all(signature in bootloader_data for signature in signatures):
+      all_bootloader_media.append(bootloader_media)
+
+  if len(all_bootloader_media) != 1:
+    warnings.warn('bootloader appears to be of an unknown type', UserWarning)
+    return
+
+  bootloader_media = all_bootloader_media[0]
+
+  # Warn if the bootloader media type isn't ideal for the floppy media type.
+  if bootloader_media not in _BOOTLOADER_COMPATIBILITIES.get(floppy, set()):
+    warnings.warn('a bootloader built for {} media may not be suitable for '
+                  '{} media; proceed with caution'.format(
+                      bootloader_media, floppy), UserWarning)
+
+
 class DefaultTags(object):
   """Boring "tags file" stand-in object.
 
   Tags "read" from this file object stand-in will display boring messages to
   the user during loading, e.g.
-     LOAD 0.5K
-     LOAD 1.0K
-     LOAD 1.5K
+     READ 0.5K
+     READ 1.0K
+     READ 1.5K
   and so on.
   """
 
