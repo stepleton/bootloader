@@ -1,10 +1,28 @@
 #!/usr/bin/python
+"""Build a bootable Apple Lisa .dc42 disk image.
+
+Supports 400k/800k Sony 3.5" diskettes and Twiggy diskettes. Includes built-in
+copies of the "Stepleton" bootloader, making this program all you need to make
+a bootable Lisa disk image. Run this program with the `--help` option for usage
+documentation, and view the [README.md] file for background information and
+definitions of technical terms.
+
+This program originated at [https://github.com/stpltn/bootloader], but may have
+been modified if obtained elsewhere.
+
+This program and all bootloader programs stored inside it are released into the
+public domain without any warranty. For details, refer to the [UNLICENSE] file
+distributed with this program, or, if it's missing, to:
+  - [https://github.com/stpltn/bootloader/blob/master/UNLICENSE].
+For further information, visit [http://unlicense.org].
+"""
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import argparse
+import base64
 import re
 import struct
 import sys
@@ -20,24 +38,38 @@ def _define_flags():
                      help='68000 program to load+run (starting address $800)',
                      type=argparse.FileType('rb'))
 
+  flags.add_argument('-f', '--floppy',
+                     help='Target variety of floppy media',
+                     choices=['sony_400k', 'sony_800k', 'twiggy'],
+                     default='sony_400k')
+
   flags.add_argument('-o', '--output',
-                     help='Where to write the resulting disk image',
+                     help=('Where to write the resulting disk image; if '
+                           'unspecified, the image is written to standard out'),
                      type=argparse.FileType('wb'),
                      default='-')
 
-  flags.add_argument('-b', '--bootloader',
-                     help='"Stepleton" bootloader for loading --program',
-                     type=argparse.FileType('rb'),
-                     default='Bootloader.bin')
+  clipflag = flags.add_mutually_exclusive_group(required=False)
+  clipflag.add_argument('-c', '--clip', dest='clip', action='store_true',
+                        help=('Clip disk images to only the sectors required '
+                              'to store the bootloader and the program; may '
+                              'not be sensible if your program intends to '
+                              'write to the disk image at any point; not yet '
+                              'supported for sony_800k media; ***INCOMPATIBLE '
+                              'WITH THE LisaEm EMULATOR***'))
+  clipflag.add_argument('--noclip', dest='clip', action='store_false',
+                        help=argparse.SUPPRESS)
+  flags.set_defaults(clip=False)
 
   flags.add_argument('-t', '--tags_file',
                      help='Text file listing loading display tags',
                      type=argparse.FileType('r'))
 
-  flags.add_argument('-f', '--floppy',
-                     help='Target variety of floppy media',
-                     choices=['sony_400k', 'sony_800k', 'twiggy'],
-                     default='sony_400k')
+  flags.add_argument('-b', '--bootloader',
+                     help=('"Stepleton" bootloader for loading the program; if '
+                           'unspecified, a built-in copy of the bootloader '
+                           'matching the --floppy argument will be used'),
+                     type=argparse.FileType('rb'))
 
   return flags
 
@@ -50,8 +82,8 @@ _DATA_SIZE = {'sony_400k': 0x64000,
               'sony_800k': 0xc8000,
               'twiggy': 0xd4c00}
 
-_TAG_SIZE = {'sony_400k': 0x2580,
-             'sony_800k': 0x4b00,
+_TAG_SIZE = {'sony_400k': 0x2580,  # No longer used by this program, but
+             'sony_800k': 0x4b00,  # retained for future reference.
              'twiggy': 0x4fc8}
 
 _DISK_TYPE = {'sony_400k': '\x00',  # 400k GCR "CLV" SS-DD disk.
@@ -66,7 +98,7 @@ _DC42_MAGIC = '\x01\x00'  # BLU "magic number" string.
 
 # For the loose compatibility checks in _check_bootloader_compatibility: A
 # "Stepleton" bootloader is determined to be built for a certain floppy media
-# if it contains all of the binary strings paired with a corresponding
+# type if it contains all of the binary strings paired with a corresponding
 # _BOOTLOADER_SIGNATURES key. Meanwhile, _BOOTLOADER_COMPATIBILITIES[k] is the
 # set of bootloader build types that are notionally suitable for use with
 # floppy media type k.
@@ -82,13 +114,50 @@ _BOOTLOADER_COMPATIBILITIES = {'sony_400k': {'sony_400k', 'sony_800k'},
                                'sony_800k': {'sony_800k'},
                                'twiggy': {'twiggy'}}
 
+# Built-in "Stepleton" bootloaders for all three media types. These bootloaders
+# are the version released on 2 November 2017. If you look closely, you can see
+# that the 400k and 800k Sony bootloaders differ by just one bit!
+
+_BUILT_IN_BOOTLOADERS = {
+    'sony_400k': (
+        'KngBEEH5AAIBIDA8AQkbIFHI//xO1UJlXY1djSx8AAAIAEKHHjgBs+KfUgdhIN38AAACAG'
+        'FKJk08PAAYOjwADU65AP4AiFKHYW5i+mDeIHwA/MABIk0kTiZ8APzdgUKAIgfgWSQ8AAwA'
+        'AE65AP4AlGUCTnWVykf6AJJO+QD+AIRB+gCUIk0QGLAZZwJOdUoAZvRCQCB8AAAIANBY41'
+        'i9yGL4sFFmBliPTvgIAJXKR/oATU75AP4AhCAHAoB//wAAZwgAh3////9gKAxHTwdjBj48'
+        '//9gHEH6ACAwB+BIEjwAC7AYYwRTAWD4vgFjCB48AP8CPAAaTnUPHy8//0JBRCBDSEVDS1'
+        'NVTQBGTE9QUFkgRkFJTABMYXN0IG91dCEA'),
+    'sony_800k': (
+        'KngBEEH5AAIBIDA8AQkbIFHI//xO1UJlXY1djSx8AAAIAEKHHjgBs+KfUgdhIN38AAACAG'
+        'FKJk08PAAYOjwADU65AP4AiFKHYW5i+mDeIHwA/MABIk0kTiZ8APzdgUKAIgfgWSQ8AAwA'
+        'AE65AP4AlGUCTnWVykf6AJJO+QD+AIRB+gCUIk0QGLAZZwJOdUoAZvRCQCB8AAAIANBY41'
+        'i9yGL4sFFmBliPTvgIAJXKR/oATU75AP4AhCAHAoB//gAAZwgAh3////9gKAxHTwdjBj48'
+        '//9gHEH6ACAwB+BIEjwAC7AYYwRTAWD4vgFjCB48AP8CPAAaTnUPHy8//0JBRCBDSEVDS1'
+        'NVTQBGTE9QUFkgRkFJTABMYXN0IG91dCEA'),
+    'twiggy': (
+        'KngBEEH5AAIBKjA8ARMbIFHI//xO1UJlXY1djSx8AAAIAEKHHjgBs+KfUgdhIN38AAACAG'
+        'FKJk08PAAYOjwADU65AP4AiFKHYW5i+mDeIHwA/MABIk0kTiZ8APzdgUKAIgfgWSQ8AAwA'
+        'AE65AP4AlGUCTnWVykf6AJtO+QD+AIRB+gCdIk0QGLAZZwJOdUoAZvRCQCB8AAAIANBY41'
+        'i9yGL4sFFmBliPTvgIAJXKR/oAVk75AP4AhCAHAoB//gAAZw4Kh4AAAAAAh3////9gKAxH'
+        'LQ5jBj48//9gHEH6ACAwB+BIEjwAFbAYYwRTAWD4vgFjCB48AP8CPAAaTnUDChAWHCIp/0'
+        'JBRCBDSEVDS1NVTQBGTE9QUFkgRkFJTABMYXN0IG91dCEA'),
+}
+
 
 def main(FLAGS):
+  # Additional argument checks.
+  if FLAGS.clip and FLAGS.floppy == 'sony_800k': raise RuntimeError(
+      '--clip may not be used with sony_800k media for the time being')
+
   # No tags_file listed? We supply a boring stand-in.
   if FLAGS.tags_file is None: FLAGS.tags_file = DefaultTags()
 
-  # Load bootloader. If less than 512 bytes, pad out with zeros.
-  bootloader_data, _ = _read_binary_data(FLAGS.bootloader, 0x200, 'bootloader')
+  # Load bootloader data. If no file is specified, use one of the built-in
+  # bootloaders. If data is less than 512 bytes long, pad out with zeros.
+  if FLAGS.bootloader:
+    bootloader_data, _ = _read_binary_data(FLAGS.bootloader, 512, 'bootloader')
+  else:
+    bootloader_data = base64.decodestring(_BUILT_IN_BOOTLOADERS[FLAGS.floppy])
+    bootloader_data += '\x00' * (0x200 - len(bootloader_data))
 
   # Warn user if bootloader and floppy type may not be compatible.
   _check_bootloader_compatibility(bootloader_data, FLAGS.floppy)
@@ -96,7 +165,7 @@ def main(FLAGS):
   # Load program data; if smaller than the disk data capacity minus 512 (for the
   # sector already used by the bootloader), pad it out with zeros.
   program_data, program_size = _read_binary_data(
-      FLAGS.program, _DATA_SIZE[FLAGS.floppy] - 0x200, 'program')
+      FLAGS.program, _DATA_SIZE[FLAGS.floppy] - 0x200, 'program', FLAGS.clip)
 
   # Compute the checksum that the bootloader uses to verify program integrity.
   program_checksum = _compute_program_checksum(program_data, program_size)
@@ -104,9 +173,10 @@ def main(FLAGS):
   # Final assembly of sector data: concatenate bootloader and program data.
   data = bootloader_data + program_data
 
-  # Load and assemble tag data; note calculation of the program data's checksum.
+  # Load and assemble tag data; note inclusion of the program data's checksum.
   tags = _assemble_tags(
-      FLAGS.tags_file, program_checksum, program_size, _TAG_SIZE[FLAGS.floppy])
+      FLAGS.tags_file, program_checksum, program_size,
+      num_sectors=(len(data) // 0x200))
 
   # Permute data and tag ordering for Sony 800k DS-DD disks.
   if FLAGS.floppy == 'sony_800k':
@@ -121,10 +191,10 @@ def main(FLAGS):
   dc42_parts.append(struct.pack('64p', '-not a Macintosh disk-'))
 
   ## Data size ##
-  dc42_parts.append(struct.pack('>I', _DATA_SIZE[FLAGS.floppy]))
+  dc42_parts.append(struct.pack('>I', len(data)))
 
   ## Tag size ##
-  dc42_parts.append(struct.pack('>I', _TAG_SIZE[FLAGS.floppy]))
+  dc42_parts.append(struct.pack('>I', len(tags)))
 
   ## Data checksum ##
   dc42_parts.append(_compute_dc42_checksum(data))
@@ -152,17 +222,21 @@ def main(FLAGS):
   FLAGS.output.write(''.join(dc42_parts))
 
 
-def _read_binary_data(fp, size, name):
+def _read_binary_data(fp, size, name, clip=False):
   """Read zero-padded binary data from a file.
 
   Attempts to read `size+1` bytes from filehandle `fp`. If 0 or more than `size`
   bytes are read, raises an IOError. Data of any other size is returned to the
-  caller, followed by enough zero padding to yield `size` bytes exactly.
+  caller, followed by enough zero padding to yield `size` bytes exactly (if
+  `clip` is False) or to yield the nearest larger multiple of 0x200 (if `clip`
+  is True).
 
   Args:
     fp: file object to read from.
     size: number of bytes to read from `fp`.
     name: name for data being loaded (used for exception messages).
+    clip: whether to pad binary data with 0s to the nearest larger multiple of
+        0x200 (if True) or to `size` (if False).
 
   Returns: a 2-tuple whose members are the data loaded from `fp` (zero-padded)
       and the original size of the data in bytes prior to zero-padding.
@@ -177,11 +251,14 @@ def _read_binary_data(fp, size, name):
   if len(data) > size:
     raise IOError('{} data file was larger than {} bytes'.format(name, size))
 
-  # Zero-pad and return with original size.
-  return data + ('\x00' * (size - len(data))), len(data)
+  # Zero-pad as directed by `clip`.
+  if clip:
+    return data + ('\x00' * (0x200 + ~((len(data)-1) & 0x1ff))), len(data)
+  else:
+    return data + ('\x00' * (size - len(data))), len(data)
 
 
-def _assemble_tags(fp, checksum, program_size, tagdata_size):
+def _assemble_tags(fp, checksum, program_size, num_sectors):
   """Assemble sector tags required by a "Stepleton" bootloader.
 
   Constructs tags for all sectors of the disk image. All but the last of the
@@ -195,7 +272,7 @@ def _assemble_tags(fp, checksum, program_size, tagdata_size):
     checksum: two-byte program checksum mentioned above. Computed in this
         program by `_compute_program_checksum`.
     program_size: size of the program the bootloader should load, in bytes.
-    tagdata_size: total size of all sector tags; or, number of sectors * 12.
+    num_sectors: number of sectors to assemble tags for.
 
   Returns: all sector tags as one contiguous `tagdata_size` chunk.
   """
@@ -215,7 +292,7 @@ def _assemble_tags(fp, checksum, program_size, tagdata_size):
 
   # The tags for the remaining sectors are all 0s, obtained by padding.
   tagdata = ''.join(tags)
-  return tagdata + ('\x00' * (tagdata_size - len(tagdata)))
+  return tagdata + ('\x00' * (12 * num_sectors - len(tagdata)))
 
 
 def _read_next_tag(fp):
