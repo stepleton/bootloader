@@ -1,3 +1,9 @@
+NO LONGER UPDATED HERE
+======================
+
+**This code is no longer updated on github.** For the most recent version of
+this repository, visit https://codeberg.org/stepleton/bootloader
+
 Floppy disk bootloader for Lisa
 ===============================
 
